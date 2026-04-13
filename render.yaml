@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: swarm-autonomous
+    runtime: python
+    buildCommand: pip install stripe
+    startCommand: python3 swarm_render.py
+    envVars:
+      - key: STRIPE_SECRET_KEY
+        sync: false
