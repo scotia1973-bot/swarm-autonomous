@@ -81,7 +81,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 print("Starting web server on port 8000...")
-server = HTTPServer(('0.0.0.0', 8000), Handler)
+server = port = int(os.environ.get('PORT', 8000))
+server = HTTPServer(('0.0.0.0', port), Handler)
 
 print("SWARM ONLINE")
 print("Running forever...")
