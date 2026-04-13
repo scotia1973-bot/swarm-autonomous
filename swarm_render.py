@@ -2,8 +2,8 @@
 import os, sqlite3, urllib.parse
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-
 import stripe
+
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
 CITIES = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Miami", "Atlanta", "Seattle", "Denver", "Boston"]
@@ -66,20 +66,32 @@ def process_lead(data):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/' or self.path == '':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b"<h2>Swarm Active</h2><p>Go to <a href='/pages/'>/pages/</a></p>")
+            return
+        
+        if self.path == '/pages/':
             self.path = '/pages/index.html'
+        
         try:
             if self.path.startswith('/pages/'):
-                filepath = self.path[1:]
+                filepath = self.path[1:]  # Remove leading slash
+                if os.path.isdir(filepath):
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Not Found")
+                    return
                 with open(filepath, 'rb') as f:
                     self.send_response(200)
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
                     self.wfile.write(f.read())
             else:
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
+                self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b"<h2>Swarm Active</h2><p>Go to <a href='/pages/'>/pages/</a></p>")
+                self.wfile.write(b"Not Found")
         except FileNotFoundError:
             self.send_response(404)
             self.end_headers()
