@@ -1,51 +1,62 @@
 #!/usr/bin/env python3
-import os, json, sqlite3, subprocess, time, threading, urllib.parse
+import os, sqlite3, urllib.parse
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Load Stripe
-key_file = os.path.expanduser("~/.swarm/.env")
-if os.path.exists(key_file):
-    with open(key_file) as f:
-        for line in f:
-            if "STRIPE_SECRET_KEY" in line:
-                STRIPE_KEY = line.split("=")[1].strip()
-    os.environ['STRIPE_SECRET_KEY'] = STRIPE_KEY
-    import stripe
-    stripe.api_key = STRIPE_KEY
-    print("✅ Stripe loaded")
+import stripe
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-CITIES = ["New York","Los Angeles","Chicago","Houston","Phoenix","Miami","Atlanta","Seattle","Denver","Boston"]
+# Simple landing pages (no Ollama needed)
+CITIES = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Miami", "Atlanta", "Seattle", "Denver", "Boston"]
 
-def discover_niches(city):
-    try:
-        prompt = f"List 5 urgent home services in {city} people pay $200+ for. Format: 'service|price'"
-        result = subprocess.run(['ollama', 'run', 'llama3.2', prompt], capture_output=True, text=True, timeout=30)
-        niches = []
-        for line in result.stdout.strip().split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                niches.append({'niche': parts[0].strip(), 'price': int(parts[1]) if parts[1].isdigit() else 300})
-        return niches if niches else [{'niche': 'plumber', 'price': 350}]
-    except:
-        return [{'niche': 'plumber', 'price': 350}]
-
-def build_page(city, niche, price):
-    html = f'<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emergency {niche} {city}</title><style>body{{font-family:Arial;padding:20px;max-width:600px;margin:auto}} input,textarea{{width:100%;padding:10px;margin:5px 0}} button{{background:#ff6600;color:white;padding:15px;width:100%;border:none}}</style></head><body><h1>Emergency {niche} in {city}</h1><p>Fixed price: ${price}</p><form method="POST"><input name="name" placeholder="Your name" required><input name="phone" placeholder="Phone number" required><textarea name="problem" placeholder="Describe your emergency" required></textarea><button>GET HELP NOW</button></form></body></html>'
-    filename = f"{city}_{niche.replace(' ', '_')}.html"
+def build_pages():
+    """Create HTML pages for each city"""
     os.makedirs("pages", exist_ok=True)
-    with open(f"pages/{filename}", "w") as f:
-        f.write(html)
-    return filename
+    for city in CITIES:
+        html = f'''<!DOCTYPE html>
+<html>
+<head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Emergency Plumber {city}</title>
+<style>
+body{{font-family:Arial;padding:20px;max-width:600px;margin:auto}}
+input,textarea{{width:100%;padding:10px;margin:5px 0}}
+button{{background:#ff6600;color:white;padding:15px;width:100%;border:none}}
+</style>
+</head>
+<body>
+<h1>Emergency Plumber in {city}</h1>
+<p>Fixed price: $50</p>
+<form action="/submit" method="POST">
+<input name="name" placeholder="Your name" required>
+<input name="phone" placeholder="Phone number" required>
+<textarea name="problem" placeholder="Describe your emergency" required></textarea>
+<button>GET HELP NOW</button>
+</form>
+</body>
+</html>'''
+        with open(f"pages/{city}.html", "w") as f:
+            f.write(html)
+    # Create index page
+    with open("pages/index.html", "w") as f:
+        f.write("<h1>Emergency Services</h1><ul>")
+        for city in CITIES:
+            f.write(f'<li><a href="{city}.html">{city}</a></li>')
+        f.write("</ul>")
+    print(f"✅ Built {len(CITIES)} pages")
 
 def process_lead(data):
-    phone = data.get('phone', '')
-    problem = data.get('problem', '')
-    try:
-        urgent = subprocess.run(['ollama', 'run', 'llama3.2', f"Is this urgent? Reply yes or no: {problem}"],
-                               capture_output=True, text=True, timeout=10)
-        if 'yes' in urgent.stdout.lower():
-            payment = stripe.PaymentIntent.create(amount=5000, currency='usd', payment_method_types=['card'])
+    """Process lead and charge Stripe"""
+    phone = data.get('phone', [''])[0]
+    if phone:
+        try:
+            payment = stripe.PaymentIntent.create(
+                amount=5000,
+                currency='usd',
+                payment_method_types=['card'],
+                description=f"Lead from {phone}"
+            )
+            # Save to database
             conn = sqlite3.connect('money.db')
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS earnings (id INTEGER PRIMARY KEY, amount REAL, phone TEXT, created_at TIMESTAMP)")
@@ -54,38 +65,53 @@ def process_lead(data):
             conn.close()
             print(f"💰 CHARGED $50 - {phone}")
             return True
-    except Exception as e:
-        print(f"Charge failed: {e}")
+        except Exception as e:
+            print(f"❌ Charge failed: {e}")
     return False
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        self.wfile.write(b"<h2>Swarm Active</h2>")
+        if self.path == '/' or self.path == '':
+            self.path = '/pages/index.html'
+        # Serve files from pages directory
+        try:
+            if self.path.startswith('/pages/'):
+                filepath = self.path[1:]  # Remove leading slash
+                with open(filepath, 'rb') as f:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b"<h2>Swarm Active</h2><p>Go to <a href='/pages/'>/pages/</a></p>")
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+
     def do_POST(self):
-        length = int(self.headers['Content-Length'])
-        data = urllib.parse.parse_qs(self.rfile.read(length).decode())
-        lead = {k: v[0] for k, v in data.items()}
-        process_lead(lead)
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"<h2>Request received</h2>")
+        if self.path == '/submit':
+            length = int(self.headers['Content-Length'])
+            data = urllib.parse.parse_qs(self.rfile.read(length).decode())
+            process_lead(data)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b"<h2>✓ Request received</h2><p>A specialist will call you.</p><a href='/pages/'>Back</a>")
+
     def log_message(self, format, *args):
-        pass
+        print(f"[{datetime.now()}] {args}")
 
-# Render uses PORT environment variable
+# Build pages on startup
+build_pages()
+
+# Start server
 port = int(os.environ.get('PORT', 8000))
-print(f"Starting swarm on port {port}...")
+print(f"🚀 Swarm starting on port {port}")
+print(f"📂 Pages available at /pages/")
 server = HTTPServer(('0.0.0.0', port), Handler)
-print(f"✅ SWARM ONLINE on port {port}")
-
-# Build pages
-for city in CITIES:
-    niches = discover_niches(city)
-    for n in niches:
-        build_page(city, n['niche'], n['price'])
-        print(f"  ✓ {city}: {n['niche']}")
-
+print("✅ Swarm is LIVE")
 server.serve_forever()
